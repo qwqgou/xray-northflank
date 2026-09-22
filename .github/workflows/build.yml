@@ -1,0 +1,60 @@
+name: build
+
+# The dev box that authored this project could not reach a container registry,
+# so the Dockerfile was only statically reviewed there. This workflow is the
+# real build check: it must succeed before deploying to Northflank.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  image:
+    name: build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: xray-northflank:ci
+
+      - name: Smoke test the image
+        run: |
+          set -eux
+          UUID="$(cat /proc/sys/kernel/random/uuid)"
+          docker run -d --name xnf \
+            -e UUID="$UUID" \
+            -e PUBLIC_HOST="example.code.run" \
+            -p 18080:8080 \
+            xray-northflank:ci
+
+          # Give nginx + xray a moment to come up, then require a healthy probe.
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
+              echo "healthz OK after ${i}s"
+              break
+            fi
+            [ "$i" -eq 30 ] && { echo "healthz never became ready" >&2; docker logs xnf; exit 1; }
+            sleep 1
+          done
+
+          echo "--- decoy page ---"
+          curl -fsS http://127.0.0.1:18080/ | grep -q "Edge Gateway Online"
+
+          echo "--- generated links / subscription ---"
+          docker logs xnf 2>&1 | grep -E "vless://" | head -n 5
+
+          echo "--- container log tail ---"
+          docker logs xnf 2>&1 | tail -n 40
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs xnf 2>&1 || true
