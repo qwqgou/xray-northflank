@@ -1,0 +1,34 @@
+services:
+  xray-northflank:
+    build:
+      context: .
+      args:
+        XRAY_VERSION: latest
+    image: xray-northflank:local
+    container_name: xnf-local
+    restart: unless-stopped
+    ports:
+      # Northflank terminates TLS and forwards plain HTTP to LISTEN_PORT.
+      # Locally this is plain HTTP on http://localhost:8080
+      - "8080:8080"
+    environment:
+      # ----- required: keep this stable across restarts -----
+      UUID: "de04add9-5c68-8bab-950c-08cd5320df18"
+      # ----- the public hostname your clients will dial -----
+      PUBLIC_HOST: "localhost"
+      LISTEN_PORT: "8080"
+      # ----- paths -----
+      XHTTP_PATH: "/xhttp"
+      # ----- optional: legacy WebSocket transport (deprecated by Xray) -----
+      ENABLE_WS: "false"
+      WS_PATH: "/ws"
+      # ----- optional: expose Clash/v2rayN subscription files -----
+      SUB_ENABLE: "false"
+      # SUB_TOKEN: "change-me-to-something-random"
+      NODE_TAG: "LOCAL"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

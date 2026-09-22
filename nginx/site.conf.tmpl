@@ -1,0 +1,98 @@
+# ===========================================================================
+#  xray-northflank :: public HTTP server block
+#  Rendered by entrypoint.sh (envsubst) into /etc/nginx/conf.d/site.conf
+#  Placeholders: ${LISTEN_PORT} ${XRAY_PORT} ${WS_PATH} ${XHTTP_PATH}
+#
+#  The two marker comments at the very end of this file delimit the optional
+#  WebSocket vhost, which is deleted at startup when ENABLE_WS is not "true".
+#  Both markers sit INSIDE the server braces, so deleting the range cannot
+#  unbalance them; entrypoint.sh asserts the brace count afterwards.
+# ===========================================================================
+server {
+    listen       ${LISTEN_PORT} default_server;
+    listen       [::]:${LISTEN_PORT} default_server;
+    server_name  _;
+
+    charset utf-8;
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    # -------------------------------------------------------------------
+    # Health probe (also what the Docker HEALTHCHECK hits)
+    # -------------------------------------------------------------------
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    # ===================================================================
+    # VLESS + XHTTP   (path: /${XHTTP_PATH})   <- the modern transport
+    # XHTTP (formerly SplitHTTP) speaks ordinary HTTP/1.1 requests, so a
+    # plain proxy location is enough.  It keeps working where WebSocket
+    # upgrades are blocked or stripped by an intermediary.
+    # ===================================================================
+    location ^~ /${XHTTP_PATH} {
+        proxy_pass http://127.0.0.1:${XRAY_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_redirect off;
+
+        # long-lived streaming downloads
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        chunked_transfer_encoding on;
+        client_max_body_size 0;
+
+        # Uncomment while debugging; XHTTP produces very chatty access logs.
+        # access_log off;
+    }
+
+    # ===================================================================
+    # Everything else -> normal-looking decoy site
+    # ===================================================================
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location @decoy {
+        root /usr/share/nginx/html;
+        try_files /index.html =404;
+    }
+
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+
+# WG_WS_START
+    # ===================================================================
+    # VLESS + WebSocket   (path: /${WS_PATH})   [deprecated in Xray 26.x]
+    # Only genuine WebSocket handshakes reach Xray.  Anything else on this
+    # path falls through to the decoy site, so an active prober never sees
+    # a "400 Bad Request from Xray" fingerprint.
+    # ===================================================================
+    location ^~ /${WS_PATH} {
+        if ($http_upgrade ~* "websocket") {
+            rewrite ^ /__ws__ break;
+        }
+        try_files /__never__ @decoy;
+    }
+
+    location = /__ws__ {
+        internal;
+        proxy_pass http://127.0.0.1:${XRAY_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host       $host;
+        proxy_set_header X-Real-IP  $remote_addr;
+        proxy_redirect off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+# WG_WS_END
+}

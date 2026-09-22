@@ -1,0 +1,22 @@
+# --- secrets / local runtime state ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+tools/config.json
+rendered/
+out/
+tmp/
+
+# --- local test scratch ---
+tests/.work/
+tests/tmp/
+*.log
+
+# --- editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

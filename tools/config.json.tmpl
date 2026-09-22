@@ -1,0 +1,114 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "",
+    "error": ""
+  },
+  "inbounds": [
+    /* WS_INBOUND_START
+    {
+      "tag": "vless-ws",
+      "listen": "127.0.0.1",
+      "port": __XRAY_PORT__,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "__UUID__"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "__WS_PATH__"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    WS_INBOUND_END */
+    {
+      /* CORE_INBOUND - XHTTP is the current-generation transport (replaces
+         the deprecated WebSocket and SplitHTTP transports). */
+      "tag": "vless-xhttp",
+      "listen": "127.0.0.1",
+      "port": __XRAY_PORT__,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "__UUID__"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "path": "__XHTTP_PATH__",
+          "mode": "auto"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole",
+      "settings": {}
+    }
+  ],
+  "dns": {
+    "servers": [
+      {
+        "address": "https://1.1.1.1/dns-query",
+        "domains": [
+          "geosite:geolocation-!cn"
+        ]
+      },
+      "1.1.1.1",
+      "8.8.8.8"
+    ],
+    "queryStrategy": "UseIPv4"
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "block"
+      }
+    ]
+  }
+}
