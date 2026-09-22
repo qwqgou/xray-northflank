@@ -15,7 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl unzip bash nginx iproute2; \
+        ca-certificates curl unzip bash nginx iproute2 gettext-base; \
     rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -64,6 +64,10 @@ COPY tools/                /opt/xnf/
 RUN set -eux; \
     chmod 0755 /entrypoint.sh; \
     chmod 0755 /opt/xnf/*.sh 2>/dev/null || true; \
+    # Fail the build (not the container) if a runtime tool is missing.
+    for t in envsubst xray nginx curl sed grep awk; do \
+        command -v "$t" >/dev/null 2>&1 || { echo "ERROR: required tool '$t' is missing" >&2; exit 1; }; \
+    done; \
     nginx -t -c /etc/nginx/nginx.conf || true
 
 # Northflank auto-detects EXPOSE as an HTTP port (public by default).
