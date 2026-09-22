@@ -5,11 +5,11 @@
     "error": ""
   },
   "inbounds": [
-    /* WS_INBOUND_START
+    // WS_INBOUND_START
     {
       "tag": "vless-ws",
       "listen": "127.0.0.1",
-      "port": __XRAY_PORT__,
+      "port": __WS_PORT__,
       "protocol": "vless",
       "settings": {
         "clients": [
@@ -34,7 +34,7 @@
         ]
       }
     },
-    WS_INBOUND_END */
+    // WS_INBOUND_END
     {
       /* CORE_INBOUND - XHTTP is the current-generation transport (replaces
          the deprecated WebSocket and SplitHTTP transports). */

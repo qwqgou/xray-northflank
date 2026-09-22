@@ -26,58 +26,51 @@ jobs:
           load: true
           tags: xray-northflank:ci
 
-      # Catches missing runtime tools (this is how `envsubst` came up) and any
-      # templating/validation regression, without needing the ports to bind.
-      - name: Config render + validation inside the image
+      # Runs the real entrypoint in self-check mode: it renders both templates,
+      # asserts the vhost brace balance, and requires `nginx -t` plus
+      # `xray run -test` to pass. This is how a missing runtime tool such as
+      # envsubst, or a missing nginx user, gets caught here instead of as a
+      # dead container on Northflank.
+      - name: Self-check, WebSocket disabled
         run: |
           set -eux
           docker run --rm \
             -e UUID="$(cat /proc/sys/kernel/random/uuid)" \
             -e PUBLIC_HOST="example.code.run" \
-            --entrypoint bash xray-northflank:ci -c '
-              set -eux
-              export LISTEN_PORT=8080 XRAY_PORT=10000 WS_PATH=/ws XHTTP_PATH=/xhttp
-              envsubst "\${LISTEN_PORT} \${XRAY_PORT} \${WS_PATH} \${XHTTP_PATH}" \
-                < /etc/nginx/nf-templates/site.conf.tmpl > /etc/nginx/conf.d/site.conf
-              grep -q "listen       8080" /etc/nginx/conf.d/site.conf
-              nginx -t -c /etc/nginx/nginx.conf
-              sed -e "s|__XRAY_PORT__|10000|g" \
-                  -e "s|__UUID__|$(cat /proc/sys/kernel/random/uuid)|g" \
-                  -e "s|__WS_PATH__|/ws|g" \
-                  -e "s|__XHTTP_PATH__|/xhttp|g" \
-                  /opt/xnf/config.json.tmpl > /etc/xray/config.json
-              xray run -test -c /etc/xray/config.json
-            '
+            --entrypoint /entrypoint.sh \
+            xray-northflank:ci --check > /tmp/render-no-ws.log 2>&1
+          grep -q 'location ^~ /xhttp' /tmp/render-no-ws.log
+          grep -q '"network": "xhttp"' /tmp/render-no-ws.log
+          # the WS block must be gone and the markers must not survive
+          ! grep -q '__ws__' /tmp/render-no-ws.log
+          ! grep -q 'WG_WS_START' /tmp/render-no-ws.log
+          ! grep -q 'WS_INBOUND_START' /tmp/render-no-ws.log
 
-      - name: Smoke test the image
+      - name: Self-check, WebSocket enabled
         run: |
           set -eux
-          UUID="$(cat /proc/sys/kernel/random/uuid)"
-          docker run -d --name xnf \
-            -e UUID="$UUID" \
+          docker run --rm \
+            -e UUID="$(cat /proc/sys/kernel/random/uuid)" \
             -e PUBLIC_HOST="example.code.run" \
-            -p 18080:8080 \
-            xray-northflank:ci
+            -e ENABLE_WS=true \
+            -e SUB_ENABLE=true \
+            -e SUB_TOKEN=ci-token \
+            --entrypoint /entrypoint.sh \
+            xray-northflank:ci --check > /tmp/render-ws.log 2>&1
+          grep -q 'location ^~ /ws' /tmp/render-ws.log
+          grep -q '"network": "ws"' /tmp/render-ws.log
+          grep -q 'sub-[0-9a-f]\{16\}\.yaml' /tmp/render-ws.log
 
-          # Give nginx + xray a moment to come up, then require a healthy probe.
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
-              echo "healthz OK after ${i}s"
-              break
-            fi
-            [ "$i" -eq 30 ] && { echo "healthz never became ready" >&2; docker logs xnf; exit 1; }
-            sleep 1
-          done
-
-          echo "--- decoy page ---"
-          curl -fsS http://127.0.0.1:18080/ | grep -q "Edge Gateway Online"
-
-          echo "--- generated links / subscription ---"
-          docker logs xnf 2>&1 | grep -E "vless://" | head -n 5
-
-          echo "--- container log tail ---"
-          docker logs xnf 2>&1 | tail -n 40
+      # Starts the real image and exercises it from the outside. The container
+      # step additionally runs a real Xray WebSocket client and a real Xray
+      # XHTTP client through nginx, asserting HTTP 101 on the upgrade - the
+      # check that the earlier probe-only suite lacked.
+      - name: End-to-end test (decoy, WS + XHTTP tunnels, subscription)
+        run: sh tests/ci-e2e-run.sh xray-northflank:ci
 
       - name: Dump container logs on failure
         if: failure()
-        run: docker logs xnf 2>&1 || true
+        run: |
+          docker ps -a
+          docker logs xnf-ci-e2e 2>&1 || true
+          docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} err={{.State.Error}}' xnf-ci-e2e || true

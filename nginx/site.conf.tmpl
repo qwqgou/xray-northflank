@@ -1,7 +1,11 @@
 # ===========================================================================
 #  xray-northflank :: public HTTP server block
 #  Rendered by entrypoint.sh (envsubst) into /etc/nginx/conf.d/site.conf
-#  Placeholders: ${LISTEN_PORT} ${XRAY_PORT} ${WS_PATH} ${XHTTP_PATH}
+#  Placeholders: ${LISTEN_PORT} ${XRAY_PORT} ${XHTTP_PORT} ${WS_PORT}
+#                ${WS_PATH} ${XHTTP_PATH}
+#  The *_PATH values already include their leading slash (entrypoint.sh
+#  normalises them with norm_path), so never write "/${XHTTP_PATH}": that
+#  produces a "//xhttp" location, which nginx rejects outright.
 #
 #  The two marker comments at the very end of this file delimit the optional
 #  WebSocket vhost, which is deleted at startup when ENABLE_WS is not "true".
@@ -32,8 +36,8 @@ server {
     # plain proxy location is enough.  It keeps working where WebSocket
     # upgrades are blocked or stripped by an intermediary.
     # ===================================================================
-    location ^~ /${XHTTP_PATH} {
-        proxy_pass http://127.0.0.1:${XRAY_PORT};
+    location ^~ ${XHTTP_PATH} {
+        proxy_pass http://127.0.0.1:${XHTTP_PORT};
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -59,32 +63,34 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    location @decoy {
-        root /usr/share/nginx/html;
-        try_files /index.html =404;
-    }
-
     location ~ /\.(?!well-known) {
         deny all;
     }
 
 # WG_WS_START
     # ===================================================================
-    # VLESS + WebSocket   (path: /${WS_PATH})   [deprecated in Xray 26.x]
-    # Only genuine WebSocket handshakes reach Xray.  Anything else on this
-    # path falls through to the decoy site, so an active prober never sees
-    # a "400 Bad Request from Xray" fingerprint.
+    # VLESS + WebSocket   (path: ${WS_PATH})   [deprecated in Xray 26.x]
+    # A genuine WebSocket handshake is proxied to Xray. Everything else on
+    # this path is answered with the decoy site, so an active prober sees an
+    # ordinary page instead of Xray's "400 Bad Request" fingerprint.
+    #
+    # The upgrade test is a `map` ($xnf_ws_upgrade, defined in nginx.conf).
     # ===================================================================
-    location ^~ /${WS_PATH} {
-        if ($http_upgrade ~* "websocket") {
-            rewrite ^ /__ws__ break;
-        }
-        try_files /__never__ @decoy;
-    }
-
-    location = /__ws__ {
-        internal;
-        proxy_pass http://127.0.0.1:${XRAY_PORT};
+    location ^~ ${WS_PATH} {
+        # A genuine handshake is proxied to Xray; anything else is answered
+        # with the decoy page, so a prober sees what any other path returns.
+        #
+        # The shape below is the only one verified to work on nginx 1.22:
+        #   * try_files in this location runs in the rewrite phase BEFORE the
+        #     `if`, so it swallows real handshakes (hard 404 for clients);
+        #   * `if`+proxy_pass cannot carry proxy_http_version / proxy_set_header
+        #     (only proxy_pass, proxy_set_header, proxy_redirect and break are
+        #     allowed inside `if`);
+        #   * a variable `root` makes every element miss, and `error_page`
+        #     INSIDE an `if` never resolves the named location (bare 404).
+        if ($xnf_ws_upgrade != "1") { return 418; }
+        error_page 418 = @xnf_decoy;
+        proxy_pass http://127.0.0.1:${WS_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade    $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -93,6 +99,13 @@ server {
         proxy_redirect off;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    # Decoy page for the WebSocket path (see above). Never reached directly.
+    location @xnf_decoy {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html =404;
     }
 # WG_WS_END
 }

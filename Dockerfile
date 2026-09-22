@@ -50,10 +50,23 @@ RUN set -eux; \
 
 # ---------------------------------------------------------------------------
 # nginx: drop the stock site, ship our own templates + decoy page
+#
+# The `nginx` user is created explicitly on purpose. Debian's nginx package
+# normally does that from its maintainer scripts, but on debian:bookworm-slim
+# the user is absent, so /etc/nginx/nginx.conf's `user nginx;` makes every
+# start (and every `nginx -t`) die with:
+#   [emerg] getpwnam("nginx") failed in /etc/nginx/nginx.conf:7
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf; \
-    mkdir -p /etc/nginx/nf-templates
+    mkdir -p /etc/nginx/nf-templates /var/log/nginx; \
+    getent group nginx >/dev/null || groupadd --system nginx; \
+    getent passwd nginx >/dev/null || useradd --system \
+        --gid nginx --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin --comment "nginx web server" nginx; \
+    mkdir -p /var/lib/nginx/body /var/lib/nginx/proxy; \
+    chown -R nginx:nginx /var/lib/nginx; \
+    chown -R nginx:adm /var/log/nginx
 
 COPY nginx/main.conf       /etc/nginx/nginx.conf
 COPY nginx/site.conf.tmpl  /etc/nginx/nf-templates/site.conf.tmpl
@@ -61,14 +74,16 @@ COPY nginx/decoy/          /usr/share/nginx/html/
 COPY entrypoint.sh         /entrypoint.sh
 COPY tools/                /opt/xnf/
 
+# Fail the build - not the container - when a required runtime tool or the
+# nginx user is missing, and when the stock nginx.conf is not valid.
 RUN set -eux; \
     chmod 0755 /entrypoint.sh; \
     chmod 0755 /opt/xnf/*.sh 2>/dev/null || true; \
-    # Fail the build (not the container) if a runtime tool is missing.
     for t in envsubst xray nginx curl sed grep awk; do \
         command -v "$t" >/dev/null 2>&1 || { echo "ERROR: required tool '$t' is missing" >&2; exit 1; }; \
     done; \
-    nginx -t -c /etc/nginx/nginx.conf || true
+    getent passwd nginx >/dev/null || { echo "ERROR: the 'nginx' user does not exist" >&2; exit 1; }; \
+    nginx -t -c /etc/nginx/nginx.conf
 
 # Northflank auto-detects EXPOSE as an HTTP port (public by default).
 EXPOSE 8080

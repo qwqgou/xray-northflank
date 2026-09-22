@@ -22,6 +22,11 @@ services:
       # ----- optional: legacy WebSocket transport (deprecated by Xray) -----
       ENABLE_WS: "false"
       WS_PATH: "/ws"
+      # ----- optional: Xray backend ports (loopback only) -----
+      # XHTTP_PORT and WS_PORT must differ: Xray cannot serve the WS and XHTTP
+      # transports on one listen address + port.
+      # XHTTP_PORT: "10000"
+      # WS_PORT: "10001"
       # ----- optional: expose Clash/v2rayN subscription files -----
       SUB_ENABLE: "false"
       # SUB_TOKEN: "change-me-to-something-random"

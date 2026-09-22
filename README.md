@@ -89,7 +89,7 @@ Northflank 不公开的 TCP/UDP。
 客户端 ──TLS(443)──> Northflank 边缘负载均衡器 ──明文 HTTP──> 你的容器
                                                               ├── nginx :8080
                                                               │     ├── /xhttp  ──> Xray :10000  (VLESS + XHTTP)
-                                                              │     ├── /ws     ──> Xray :10000  (VLESS + WS，可选)
+                                                              │     ├── /ws     ──> Xray :10001  (VLESS + WS，可选)
                                                               │     └── 其它    ──> 伪装网页
 ```
 
@@ -203,6 +203,8 @@ xray uuid
 | `ENABLE_WS` | 否 | `false` | 是否额外开启 WebSocket 传输（已弃用，仅为兼容老客户端） |
 | `WS_PATH` | 否 | `/ws` | WebSocket 路径，仅在 `ENABLE_WS=true` 时有意义 |
 | `XRAY_PORT` | 否 | `10000` | Xray 内部监听端口（仅本机回环），保持默认即可 |
+| `XHTTP_PORT` | 否 | `XRAY_PORT` 的值 | XHTTP inbounds 的监听端口，一般不用改 |
+| `WS_PORT` | 否 | `10001` | WS inbounds 的监听端口，**必须**和 `XHTTP_PORT` 不同 |
 | `SUB_ENABLE` | 否 | `false` | 是否生成订阅文件 |
 | `SUB_TOKEN` | 否 | 空 | 订阅文件名令牌，**开了订阅就该设**，否则文件名可由 UUID 推出 |
 | `NODE_TAG` | 否 | `NF` | 客户端里显示的节点名前缀 |
@@ -282,7 +284,36 @@ curl http://localhost:8080/            # -> 伪装网页
 | `tests/integration.sh` | 起真实 nginx + Xray，验证「客户端 → nginx → Xray → 互联网」全链路 |
 | `tests/e2e-xhttp.sh` | 只验证 XHTTP 隧道本身 |
 | `tests/run-all.sh` | 跑上面全部用例，含一个 nginx 负向对照 |
+| `tests/ci-e2e-run.sh` | 在真实镜像上跑端到端测试（CI 用的就是它）：伪装页、真实 WS 与 XHTTP 客户端穿隧道、订阅文件 |
+| `tests/probe-ws-path.sh` | 用不同 `Upgrade` 头探测 `/ws`，确认只有真正的握手上游、其它一律返回伪装页 |
 | `tests/fetch-nginx.sh` | 免 root 拉取 nginx 二进制（用于本地验证） |
+
+### 改代码前必读（踩过的坑）
+
+这几条都是实测出来的，改模板/渲染脚本时很容易踩回去：
+
+1. **`tools/config.json.tmpl` 里的 `WS_INBOUND_START/END` 必须写成行注释 `//`**。
+   如果用块注释 `/* ... */` 把整个 WS inbound 包起来，Xray 的 JSONC 解析器会把
+   紧随其后的 XHTTP inbound 一起吃掉 —— 结果是「`xray run -test` 通过、但 WS
+   端口根本没人监听」，非常难查。
+2. **WS 与 XHTTP 必须用不同端口**（`XRAY_PORT`/`XHTTP_PORT` 对 `WS_PORT`）。
+   `entrypoint.sh` 会在两者相同时直接拒绝启动。
+3. **`nginx/site.conf.tmpl` 里 WS location 的写法只有一种在 nginx 1.22 上有效**：
+   `if ($xnf_ws_upgrade != "1") { return 418; }` + location 级
+   `error_page 418 = @xnf_decoy;`。其它写法都实测失败：location 里的
+   `try_files`（rewrite 阶段早于 `if`，会把真握手一起吞掉）、`if` 内部的
+   `error_page`（不会解析命名 location，直接裸 404）、`if` 内的
+   `proxy_http_version`/`proxy_set_header`（nginx 不允许，只有 `proxy_pass`
+   等极少数指令能在 `if` 里）、变量 `root`（所有路径都 miss）。
+4. **`nginx/site.conf.tmpl` 里 `${XHTTP_PATH}`/`${WS_PATH}` 不要再加前导 `/`**，
+   entrypoint 已经规范化过，写成 `/${XHTTP_PATH}` 会渲染出 `//xhttp` 导致
+   nginx 拒绝加载。
+5. **WG_WS 标记必须在 server 花括号内**（文件末尾），否则删块时会把 `server {`
+   一起删掉；`entrypoint.sh` 有括号平衡断言兜底。
+6. **验证 WS 不能只探测 `Upgrade: websocket` 的返回码**：`502` 表示 nginx 转发
+   了但没有上游在听（配置问题），`400` 才是上游 Xray WS 处理器在应答。真正的
+   通过标准是 **真实 Xray 客户端能穿过去**，日志里能看到 `101`。
+
 
 ## 故障排查
 

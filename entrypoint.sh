@@ -18,6 +18,13 @@ log()  { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 warn() { printf '%s WARN: %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
 die()  { printf '%s FATAL: %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; exit 1; }
 
+# `--check` renders + validates everything and exits without starting services.
+# CI uses it so the very same code path the container runs at boot is tested.
+CHECK_ONLY=false
+case "${1:-}" in
+    --check|--validate) CHECK_ONLY=true ;;
+esac
+
 sha256hex() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
     else openssl dgst -sha256 -r | cut -d' ' -f1; fi
@@ -76,9 +83,17 @@ norm_path() { printf '/%s' "$(printf '%s' "$1" | sed 's|^/*||; s|/*$||')"; }
 WS_PATH="$(norm_path "${WS_PATH:-ws}")"
 XHTTP_PATH="$(norm_path "${XHTTP_PATH:-xhttp}")"
 XRAY_PORT="${XRAY_PORT:-10000}"
+XHTTP_PORT="${XHTTP_PORT:-$XRAY_PORT}"
+WS_PORT="${WS_PORT:-10001}"
 case "$XRAY_PORT" in ''|*[!0-9]*) die "XRAY_PORT must be numeric" ;; esac
+case "$XHTTP_PORT" in ''|*[!0-9]*) die "XHTTP_PORT must be numeric" ;; esac
+case "$WS_PORT" in ''|*[!0-9]*) die "WS_PORT must be numeric" ;; esac
 [ "$XRAY_PORT" = "$LISTEN_PORT" ] && die "XRAY_PORT and LISTEN_PORT must differ"
 [ "$WS_PATH" = "$XHTTP_PATH" ]    && die "WS_PATH and XHTTP_PATH must differ"
+# XHTTP and WebSocket must NOT share a port: when two Xray inbounds listen on
+# the same address+port, the transport multiplexer answers the WebSocket
+# handshake with a bare "404 Not Found" and the WS transport can never connect.
+[ "$WS_PORT" = "$XHTTP_PORT" ] && die "WS_PORT and XHTTP_PORT must differ (Xray cannot serve WS and XHTTP on one port)"
 
 # ------------------------------------------------------------------ public host
 PUBLIC_HOST="${PUBLIC_HOST:-${SPACE_HOST:-${NF_HOST:-}}}"
@@ -87,10 +102,22 @@ PUBLIC_HOST="${PUBLIC_HOST%%/*}";     PUBLIC_HOST="${PUBLIC_HOST%%:*}"
 PUBLIC_HOST="$(printf '%s' "$PUBLIC_HOST" | tr 'A-Z' 'a-z')"
 
 # ------------------------------------------------------------------ nginx vhost
-export LISTEN_PORT XRAY_PORT WS_PATH XHTTP_PATH
+[ -f "$SITE_TMPL" ] || die "missing $SITE_TMPL - image build is broken"
+export LISTEN_PORT XRAY_PORT XHTTP_PORT WS_PORT WS_PATH XHTTP_PATH
 mkdir -p /etc/nginx/conf.d
-envsubst '${LISTEN_PORT} ${XRAY_PORT} ${WS_PATH} ${XHTTP_PATH}' \
-    < "$SITE_TMPL" > "${SITE_OUT}.tmp"
+
+render_nginx() {
+    envsubst '${LISTEN_PORT} ${XRAY_PORT} ${XHTTP_PORT} ${WS_PORT} ${WS_PATH} ${XHTTP_PATH}' < "$SITE_TMPL"
+}
+
+# `--check` additionally dumps the rendered configs to stdout. stdout is
+# redirected to a file for boot, so in check mode send them to stderr instead;
+# CI captures that to inspect exactly what would have been written.
+dump_rendered() {
+    if [ "$CHECK_ONLY" = true ]; then cat "$@" >&2; else cat "$@"; fi
+}
+
+render_nginx > "${SITE_OUT}.tmp"
 if is_true "$ENABLE_WS"; then
     mv "${SITE_OUT}.tmp" "$SITE_OUT"
 else
@@ -106,7 +133,8 @@ _close="$(grep -o '}' "$SITE_OUT" | wc -l)"
 
 # ------------------------------------------------------------------ xray config
 mkdir -p "$(dirname "$XRAY_CONF")"
-sed -e "s|__XRAY_PORT__|${XRAY_PORT}|g" \
+sed -e "s|__XRAY_PORT__|${XHTTP_PORT}|g" \
+    -e "s|__WS_PORT__|${WS_PORT}|g" \
     -e "s|__UUID__|${UUID}|g" \
     -e "s|__WS_PATH__|${WS_PATH}|g" \
     -e "s|__XHTTP_PATH__|${XHTTP_PATH}|g" \
@@ -130,6 +158,16 @@ if ! xray run -test -c "$XRAY_CONF" >/tmp/xray-check.log 2>&1; then
     die "generated Xray config failed validation"
 fi
 log "Xray config OK ($(grep -c '"tag": "vless-' "$XRAY_CONF") inbound(s))"
+
+# In check mode stdout is redirected to a file for boot, so the dumps are sent
+# to the log stream instead and stay out of the rendered output.
+{
+    echo "-----8<----- rendered nginx vhost (ENABLE_WS=${ENABLE_WS}) -----8<-----"
+    dump_rendered "$SITE_OUT"
+    echo "-----8<----- rendered Xray config -----8<-----"
+    dump_rendered "$XRAY_CONF"
+    echo "-----8<----- end of rendered configs -----8<-----"
+} >&2
 
 # ------------------------------------------------------------------ decoy site
 # Give the root page a name matching the host so the site looks intentional.
@@ -288,6 +326,12 @@ fi
     echo "================================================================================"
     echo
 } 
+
+# ------------------------------------------------------------------ check mode
+if [ "$CHECK_ONLY" = true ]; then
+    log "check mode: every config validated, not starting services"
+    exit 0
+fi
 
 # ------------------------------------------------------------------ run
 cleanup() {

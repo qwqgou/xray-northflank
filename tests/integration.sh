@@ -15,6 +15,8 @@ SITE_CONF="${1:?usage: integration.sh <site.conf> <config.json>}"
 XRAY_CONF="${2:?usage: integration.sh <site.conf> <config.json>}"
 LISTEN_PORT="${LISTEN_PORT:-18080}"
 XRAY_PORT="${XRAY_PORT:-10000}"
+XHTTP_PORT="${XHTTP_PORT:-$XRAY_PORT}"
+WS_PORT="${WS_PORT:-10001}"
 XHTTP_PATH="${XHTTP_PATH:-/xhttp}"
 WS_PATH="${WS_PATH:-/ws}"
 ENABLE_WS="${ENABLE_WS:-false}"
@@ -60,6 +62,13 @@ http {
     client_max_body_size 0;
     proxy_request_buffering off;
     proxy_buffering off;
+    # Same upgrade test as nginx/main.conf (a `map` is http-scope only, so the
+    # harness has to declare it too or the WS location references an unknown
+    # variable).
+    map \$http_upgrade \$xnf_ws_upgrade {
+        default   0;
+        "~*(^|,)\\s*websocket\\s*(,|\$)" 1;
+    }
     include $SITE_CONF;
 }
 CONF

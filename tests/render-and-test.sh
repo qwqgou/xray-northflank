@@ -10,6 +10,8 @@ XRAY="${XRAY_BIN:?set XRAY_BIN to a linux xray binary}"
 ENABLE_WS="${ENABLE_WS:-false}"
 LISTEN_PORT="${LISTEN_PORT:-8080}"
 XRAY_PORT="${XRAY_PORT:-10000}"
+XHTTP_PORT="${XHTTP_PORT:-$XRAY_PORT}"
+WS_PORT="${WS_PORT:-10001}"
 UUID="${UUID:-de04add9-5c68-8bab-950c-08cd5320df18}"
 WS_PATH="${WS_PATH:-/ws}"
 XHTTP_PATH="${XHTTP_PATH:-/xhttp}"
@@ -27,10 +29,15 @@ strip_block() {
 }
 
 # ---- nginx vhost (envsubst equivalent) ----
+# NOTE: substitute the paths verbatim, exactly like entrypoint.sh does with
+# envsubst. Stripping the leading "/" here would hide the "//xhttp" bug that
+# production hit, because the template used to add its own leading slash.
 sed -e "s|\${LISTEN_PORT}|${LISTEN_PORT}|g" \
     -e "s|\${XRAY_PORT}|${XRAY_PORT}|g" \
-    -e "s|\${WS_PATH}|${WS_PATH#/}|g" \
-    -e "s|\${XHTTP_PATH}|${XHTTP_PATH#/}|g" \
+    -e "s|\${XHTTP_PORT}|${XHTTP_PORT}|g" \
+    -e "s|\${WS_PORT}|${WS_PORT}|g" \
+    -e "s|\${WS_PATH}|${WS_PATH}|g" \
+    -e "s|\${XHTTP_PATH}|${XHTTP_PATH}|g" \
     "$ROOT/nginx/site.conf.tmpl" > "$OUT/site.raw.conf"
 if [ "$ENABLE_WS" = "true" ]; then
     mv "$OUT/site.raw.conf" "$OUT/site.conf"
@@ -45,7 +52,8 @@ echo "--- vhost brace balance: ${open} open / ${close} close ---"
 if [ "$open" -ne "$close" ]; then echo "UNBALANCED BRACES"; exit 1; fi
 
 # ---- xray config ----
-sed -e "s|__XRAY_PORT__|${XRAY_PORT}|g" \
+sed -e "s|__XRAY_PORT__|${XHTTP_PORT}|g" \
+    -e "s|__WS_PORT__|${WS_PORT}|g" \
     -e "s|__UUID__|${UUID}|g" \
     -e "s|__WS_PATH__|${WS_PATH}|g" \
     -e "s|__XHTTP_PATH__|${XHTTP_PATH}|g" \
